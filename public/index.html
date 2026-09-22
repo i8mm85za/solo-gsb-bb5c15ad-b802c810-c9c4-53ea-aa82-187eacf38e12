@@ -136,6 +136,23 @@
         </div>
         <div id="stackError" class="form-error" hidden></div>
         <div id="stackResult" class="stack-result" hidden></div>
+        <div id="workOrderPanel" class="workorder-panel" hidden>
+          <h3>执行工单（按班次容量拆分刀次）</h3>
+          <div class="workorder-controls">
+            <label>每班最多刀次（刀/班）
+              <input type="number" id="woMaxCuts" value="10" min="1" max="10000" step="1" />
+            </label>
+            <label>每批最多纸张（张/批）
+              <input type="number" id="woMaxSheets" value="500" min="1" max="500" step="1" />
+            </label>
+            <button type="button" id="woGenerate" class="btn btn-primary">生成工单</button>
+            <p class="hint">按父刀依赖做稳定拓扑拆分：父刀必在同刀/早班完成，就绪刀次按排程批次先后分班，
+              <b>不拆散批次、也不打乱批次内纸张顺序</b>；每批叠纸超过「每批最多纸张」的刀标记为未分配，
+              跨班才能完成的父子刀在「跨班次依赖」表中列出。可导出 JSON 或 CSV 下发车间。</p>
+          </div>
+          <div id="woError" class="form-error" hidden></div>
+          <div id="woResult" class="workorder-result" hidden></div>
+        </div>
       </div>
       <div id="orderSummary" class="order-summary" hidden></div>
       <div id="sheetTabs" class="sheet-tabs" hidden></div>

@@ -707,6 +707,79 @@ input:focus, select:focus {
 .r-no-cuts { background: #f1f3f5; border: 1px solid #ced4da; color: #495057; }
 .stack-unmerged tr.no-cuts td { color: var(--muted); }
 
+/* 执行工单 */
+.workorder-panel {
+  border: 1px solid #b2e0c5;
+  background: #f6fcf9;
+  border-radius: 8px;
+  padding: 10px 14px 12px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+.workorder-panel h3 { margin: 0 0 8px; font-size: 14px; color: #12613b; }
+.workorder-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 14px;
+}
+.workorder-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 180px;
+}
+.workorder-controls .btn { align-self: flex-start; margin-top: 18px; }
+.workorder-controls .hint {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.workorder-result h4 { font-size: 13.5px; margin: 12px 0 6px; color: #12613b; }
+.wo-exports { display: flex; gap: 10px; margin: 8px 0 2px; flex-wrap: wrap; }
+.wo-shift {
+  border: 1px solid #b2e0c5;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.wo-shift > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  background: #e6f6ee;
+  font-weight: 700;
+  font-size: 12.5px;
+  color: #12613b;
+  list-style: none;
+}
+.wo-shift > summary::-webkit-details-marker { display: none; }
+.wo-shift > summary::before { content: '▸ '; }
+.wo-shift[open] > summary::before { content: '▾ '; }
+.wo-table-wrap { overflow-x: auto; }
+.wo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.wo-table th, .wo-table td {
+  border: 1px solid #bce3cd;
+  padding: 4px 8px;
+  text-align: left;
+}
+.wo-table th { background: #dcf3e7; }
+.wo-table td.num, .wo-table th.num { text-align: right; }
+.wo-table td.members { white-space: normal; font-size: 12px; color: var(--muted); min-width: 130px; }
+.wo-cross td { background: #fff9db; }
+.r-over-capacity { background: #ffe8cc; border: 1px solid #ffa94d; color: #d9480f; }
+.r-missing-parent { background: #ffe3e3; border: 1px solid #ff8787; color: #c92a2a; }
+.r-blocked { background: #fff3bf; border: 1px solid #ffd43b; color: #84640b; }
+.wo-unassigned tr td:last-child, .wo-cross td:last-child { white-space: normal; font-size: 12px; color: var(--muted); }
+
 .foot {
   text-align: center;
   color: var(--muted);

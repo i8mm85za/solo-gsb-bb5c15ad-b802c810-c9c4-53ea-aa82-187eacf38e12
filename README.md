@@ -8,6 +8,8 @@
 禁止贪心多排某一品种形成无法交付的半套。
 在批量 / 多纸型结果旁还可进行**叠纸裁切排程**：按待切区域宽高、刀向、刀位、刀缝一致的规则
 把各张纸的切割树合批为可执行刀次（受叠纸上限与父刀先后约束），输出批次表、每张纸进度与未排原因。
+叠纸排程之上还可生成**执行工单**：操作者指定每班最多刀次与每批最多纸张，服务端按父刀依赖做
+稳定拓扑拆分，输出班次 / 刀次清单、跨班次依赖与未分配刀及原因，支持下载 JSON / CSV。
 
 ## 裁切规则
 
@@ -279,6 +281,57 @@
 切换到单张试排或重新生成排产方案时该面板自动隐藏/重置。
 **排产结果为空（没有任何纸张）或叠纸上限非法（非 1～500 的整数）时返回 HTTP 400。**
 
+## 执行工单（排程批次按班次容量拓扑拆分）
+
+叠纸排程生成后，面板下方提供**执行工单**区：操作者指定两项**班次容量**——
+
+- **每班最多刀次 `maxCutsPerShift`**（1～10000 的正整数，必填）：一个班次内最多下多少把刀；
+- **每批最多纸张 `maxSheetsPerBatch`**（1～500 的正整数，缺省沿用排程的 `stackLimit`）：
+  一次叠切最多允许多少张纸。
+
+服务端把排程的每个批次视为一把刀，依据 `dependencies`（每张纸“子刀 → 父刀”列表，
+随排程结果一并返回）建立有向依赖图后做**稳定拓扑拆分**：
+
+- **父刀先于子刀**：任何刀只能在其全部父刀完成后才排入班次；
+- **稳定决胜**：拓扑就绪的多把刀按**来源批次先后**（即排程的确定选批顺序）依次入班；
+  班次按拓扑顺序**贪心装满**（达到每班刀次上限即开班）；
+- **不打乱批次**：批次不会被拆散或重排，批次内 `members` 的纸张顺序原样保留；
+- **跨班次依赖**：父刀落在前一班、子刀落在后一班时，在 `crossShiftDeps` 中逐条标出
+  （纸张、子刀/父刀刀号、父子各自所在班次与全局刀次），供班前交接核对。
+
+**未分配刀及原因（`unassigned`）**：
+
+| 原因 `reason` | 含义 |
+| --- | --- |
+| `over-capacity` | 该刀成批叠纸数超过 `maxSheetsPerBatch`，整批不排入任何班次（请调大容量或重新合批） |
+| `missing-parent` | 依赖中的父刀不在排程任何批次内，该刀缺少前置裁切 |
+| `blocked` | 上游父刀未分配（超容量 / 父刀缺失 / 再上游阻断），该刀沿父刀链被阻断 |
+
+**容量非法（非正整数或越界）、排程缺少批次、排程记录不合法或父刀依赖存在环时返回 HTTP 400**
+（环错误信息中列出涉及的来源批次号）。
+
+接口 `POST /api/layout/stack/work-order` 请求体为**叠纸排程接口的完整返回**（作为 `schedule` 字段）
+加工单容量；也可省略 `schedule`、直接提交排程所需的 `sheets` / `stackLimit`，
+服务端会先运行叠纸排程再拆分工单。返回：
+
+- `maxCutsPerShift` / `maxSheetsPerBatch`：本次采用的班次容量；
+- `source` / `stackLimit`：沿用排程的来源与叠纸上限；
+- `dependencySource`：依赖图来源（`dependencies` 排程直供 / `inferred` 无该字段时按批次先后推断）；
+- `summary`：纸张数、批次数（总数 / 已分配 / 未分配）、各班刀数 `cutsPerShift`、
+  班次数、跨班次依赖条数、未分配刀数、总切线长度；
+- **`shifts`（班次 / 刀次清单）**：每班含 `cuts`——班内刀次 `cutInShift`、
+  全局连续刀次 `cutNo`、来源批次 `batchNo`、刀向 / 待切区域 / 刀位 / 刀缝 / 切线长、
+  叠纸张数与按原顺序排列的 `members`（纸张序号 / 原刀号）；
+- **`crossShiftDeps`（跨班次依赖）**：`sheetIndex`/`cutNo`（子刀）/`parentCutNo`（父刀）、
+  `fromShift`/`fromCutNo`（父）与 `toShift`/`toCutNo`（子）；
+- **`unassigned`（未分配刀及原因）**：纸张 / 原刀号 / `reason` / 中文说明 / 来源批次。
+
+**下载 JSON / CSV**：页面工单结果区提供两个导出按钮；也可直接请求
+`POST /api/layout/stack/work-order?format=csv`（或请求体 `"format":"csv"`），
+服务端以 `Content-Disposition: attachment` 返回带 UTF-8 BOM 的 CSV
+（每把已分配刀按成员纸张逐行，附未分配刀行，Excel 可直接打开）；
+`format` 仅支持 `json`（缺省）/ `csv`，其他取值返回 400。
+
 ## 单条命令启动（需要 Docker + Docker Compose）
 
 ```bash
@@ -340,6 +393,10 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
      所含纸张/原刀号）与**每张纸裁切进度**（总刀数、已排、合批/独刀、所在批次），
      并列出未排原因（单张独刀、受叠纸上限制约推迟、等待父刀、该纸无需切割）；
      叠纸上限非法或没有任何纸张时提示错误（接口返回 400）；
+     - 叠纸排程结果下方提供**执行工单**：填写每班最多刀次与每批最多纸张后点击「生成工单」，
+	     展示各班次刀次清单（可折叠）、**跨班次依赖**表与未分配刀原因
+	     （超每批容量、父刀缺失、上游阻断），并可**下载 JSON / CSV 工单**；
+	     容量非法或父刀依赖成环时提示错误（接口返回 400）；
    - 「排不下的成品 / 未排完的成品」表列出每种规格的纹向要求、已排/需求数量和剩余件数，
      并标明受阻原因（纹向受限 / 尺寸不足）。
 
@@ -351,6 +408,7 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 - `POST /api/layout/batch` — 批量排产（在单张入参基础上增加 `maxSheets` 字段，可选 `isolateOrders` 与成品行 `orderNo`）
 - `POST /api/layout/cost` — 多纸型成本排产（入参为 `kerf`、`papers`、`products`，可选 `isolateOrders` 与成品行 `orderNo`）
 - `POST /api/layout/stack` — 叠纸裁切排程（复用批量/成本结果的 `sheets`，另需 `stackLimit` 叠纸上限；可带 `source`）
+- `POST /api/layout/stack/work-order` — 执行工单（`schedule` 传叠纸排程返回或直接传 `sheets`/`stackLimit`；另需 `maxCutsPerShift`、可选 `maxSheetsPerBatch`；`?format=csv` 下载）
 
 单张请求示例（含纹向）：
 
@@ -518,18 +576,52 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 轮次、纸型与订单号随每张纸透传。`stackLimit` 不是 1～500 的正整数、
 `sheets` 缺失或为空数组时返回 HTTP 400。
 
+执行工单请求示例（把上一接口返回整体作为 `schedule`，另加班次容量；
+也可省略 `schedule` 直接传 `sheets` 与 `stackLimit`）：
+
+```json
+{
+  "maxCutsPerShift": 10,
+  "maxSheetsPerBatch": 3,
+  "schedule": {
+    "source": "batch",
+    "stackLimit": 3,
+    "batches": [
+      { "batchNo": 1, "orient": "h", "kerf": 3, "position": 286.5,
+        "region": { "w": 889, "h": 1194 }, "cutLength": 889, "totalLength": 2667,
+        "sheetCount": 3, "capped": false,
+        "members": [ { "sheetIndex": 1, "cutNo": 1 },
+                     { "sheetIndex": 2, "cutNo": 1 },
+                     { "sheetIndex": 3, "cutNo": 1 } ] }
+    ],
+    "dependencies": [ [[2, 1]], [[2, 1]], [[2, 1]] ],
+    "sheets": [],
+    "unmerged": []
+  }
+}
+```
+
+返回包含班次容量、`dependencySource`、`summary`（班次数、各班刀数、已/未分配刀数、
+跨班次依赖条数、总切线长度）、`shifts`（每把刀的班内刀次 / 全局刀次 / 来源批次 /
+刀向 / 待切区域 / 刀位 / 刀缝 / 叠纸张数 / 按原顺序排列的成员纸张）、
+`crossShiftDeps`（跨班父子刀的纸张、刀号与双方班次 / 全局刀次）与
+`unassigned`（`over-capacity` 超每批容量、`missing-parent` 父刀缺失、`blocked` 上游阻断）。
+以 `?format=csv` 请求时直接下载带 BOM 的 CSV 工单（成员逐行 + 未分配行）。
+容量非法、排程无批次或父刀依赖成环时返回 HTTP 400。
+
 ## 项目结构
 
 ```
 .
-├── server.js            # Express 入口：静态页面 + /api/layout + /api/layout/compare + /api/layout/batch + /api/layout/cost + /api/layout/stack
+├── server.js            # Express 入口：静态页面 + /api/layout + /api/layout/compare + /api/layout/batch + /api/layout/cost + /api/layout/stack + /api/layout/stack/work-order
 ├── src/packer.js        # 断头台二分排样核心（单张 layout + 三策略方案比选 layoutCompare + 固定纸型批量 layoutBatch，含纹向、订单隔离与成套生产）
 ├── src/cost.js          # 多纸型成本排产（逐轮试排候选、单位面积成本择优、库存成本核算、订单×纸型隔离与成套生产）
-├── src/stack.js         # 叠纸裁切排程（复用批量/成本切割树，按区域宽高/刀向/刀位/刀缝合批、父刀约束与确定性选批）
+├── src/stack.js         # 叠纸裁切排程（复用批量/成本切割树，按区域宽高/刀向/刀位/刀缝合批、父刀约束与确定性选批；返回 dependencies 父刀图）
+├── src/workorder.js     # 执行工单（排程批次按每班刀次/每批纸张容量做稳定拓扑分班、跨班次依赖、未分配原因、CSV 导出）
 ├── public/
-│   ├── index.html       # 单页界面（单张/批量/多纸型三种模式，纹向、订单号与隔离开关录入，单张模式含比选目标分段控件，批量/成本结果含叠纸排程面板）
+│   ├── index.html       # 单页界面（单张/批量/多纸型三种模式，纹向、订单号与隔离开关录入，单张模式含比选目标分段控件，批量/成本结果含叠纸排程与执行工单面板）
 │   ├── style.css
-│   └── app.js           # 表单交互 + SVG 渲染 + 比选标签页 + 逐张查看 + 成本/订单汇总 + 叠纸批次表与逐纸进度（原生 JS）
+│   └── app.js           # 表单交互 + SVG 渲染 + 比选标签页 + 逐张查看 + 成本/订单汇总 + 叠纸批次表/逐纸进度 + 执行工单班次清单与 JSON/CSV 导出（原生 JS）
 ├── test/smoke.test.js   # 单张/固定纸型批量算法不变量测试（node:test，无额外依赖）
 ├── test/compare.test.js # 方案比选测试：三策略候选、两种目标决胜链、全部排不进不指定最佳、确定性、校验
 ├── test/cost.test.js    # 多纸型成本排产测试：择优规则、同分顺序、库存、终止原因、校验
@@ -537,6 +629,7 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 ├── test/order.test.js   # 订单隔离排产测试：每轮选订单、订单×纸型联合决胜、只扣对应库存、受阻止损、汇总、校验
 ├── test/kit.test.js     # 成套生产测试：每张仅完整套（无富余半套）、套数最大、扣减守恒、no-progress 不扣库存、成本决胜、校验
 ├── test/stack.test.js   # 叠纸裁切排程测试：合批条件、父刀先后、叠纸上限、可合并张数/总切线长/纸张序号/原刀序决胜、未排原因、校验
+├── test/workorder.test.js # 执行工单测试：拓扑分班与班容量守恒、不打乱批次内纸张顺序、跨班次依赖、超容量/父刀缺失/阻断/环、CSV 导出、校验
 ├── Dockerfile
 └── docker-compose.yml
 ```
@@ -590,3 +683,14 @@ npm test
 零刀纸张给出 `no-cuts` 原因、等待父刀与独刀诊断、精简输入与完整输入一致、
 同输入两次运行结果完全一致（确定性），以及叠纸上限（1～500 整数）、
 空 `sheets` 与切割记录非法时的参数校验。
+
+执行工单另覆盖：全部刀次恰好排入班次且班容量守恒、全局刀次连续与班内刀次重排、
+**批次不拆散且批次内纸张顺序与排程逐位一致**、任何子刀班次不早于父刀班次、
+跨班次依赖逐条标出且按目标班次排序、容量足够时无跨班依赖、
+就绪刀按来源批次先后稳定决胜（同输入两次结果完全一致）、
+每批叠纸超容量时整批 `over-capacity` 不参与分班、缺省容量沿用排程 `stackLimit`、
+父刀缺失 `missing-parent` 并沿父刀链 `blocked` 向下传播、环依赖与自环抛错、
+无 `dependencies` 时按批次先后推断同纸链（`inferred`）、直接传 `sheets` 先排程再拆单、
+CSV 表头/逐纸已分配行/未分配行/字段转义与 UTF-8 BOM，
+以及班次容量（每班 1～10000、每批 1～500 整数）、空排程、批次号重复、
+同一刀跨批、非法 `dependencies` 等参数校验。

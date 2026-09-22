@@ -410,9 +410,21 @@ function stackSchedule(input) {
     || String(a.reason).localeCompare(String(b.reason)));
 
   const mergedBatches = batches.filter((b) => b.sheetCount > 1).length;
+
+  // 父刀依赖图：dependencies[i] 为第 i+1 张纸的 [子刀号, 父刀号] 列表（按原刀序），
+  // 供执行工单（src/workorder.js）建立批次/刀次间的先后约束
+  const dependencies = sheets.map((sh, si) => {
+    const edges = [];
+    parents[si].forEach((p, ci) => {
+      if (p >= 0) edges.push([sh.cuts[ci].n, sh.cuts[p].n]);
+    });
+    return edges;
+  });
+
   return {
     source,
     stackLimit,
+    dependencies,
     summary: {
       sheetsTotal: sheets.length,
       sheetsWithCuts: sheets.filter((sh) => sh.cuts.length > 0).length,

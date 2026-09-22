@@ -984,6 +984,7 @@ function showStackPanel(data) {
   $('stackError').hidden = true;
   $('stackError').textContent = '';
   $('stackPanel').hidden = false;
+  clearWorkOrderUi();
 }
 
 function clearStackUi() {
@@ -994,6 +995,7 @@ function clearStackUi() {
   $('stackResult').innerHTML = '';
   $('stackError').hidden = true;
   $('stackError').textContent = '';
+  clearWorkOrderUi();
 }
 
 const STACK_REASON_LABEL = {
@@ -1102,6 +1104,7 @@ function renderStack(data) {
     ${unmergedBlock}
   `;
   $('stackResult').hidden = false;
+  showWorkOrderPanel(data);
 }
 
 async function generateStack() {
@@ -1135,6 +1138,217 @@ async function generateStack() {
     errBox.hidden = false;
   } finally {
     $('stackGenerate').disabled = false;
+  }
+}
+
+/* ---------------- 执行工单（排程结果按班次容量拆分） ---------------- */
+
+let workOrderState = null; // 最近一次工单结果
+let workOrderPayload = null; // 生成工单所用请求体（导出复用）
+
+const WO_REASON_LABEL = {
+  'over-capacity': '超每批容量',
+  'missing-parent': '父刀缺失',
+  blocked: '上游被阻断',
+};
+
+function showWorkOrderPanel(schedule) {
+  workOrderState = null;
+  workOrderPayload = null;
+  $('woResult').hidden = true;
+  $('woResult').innerHTML = '';
+  $('woError').hidden = true;
+  $('woError').textContent = '';
+  // 每批最多纸张默认沿用叠纸上限（此时所有批次都不会超容量）
+  if (Number.isInteger(schedule && schedule.stackLimit)) {
+    $('woMaxSheets').value = schedule.stackLimit;
+  }
+  $('workOrderPanel').hidden = false;
+}
+
+function clearWorkOrderUi() {
+  workOrderState = null;
+  workOrderPayload = null;
+  $('workOrderPanel').hidden = true;
+  $('woResult').hidden = true;
+  $('woResult').innerHTML = '';
+  $('woError').hidden = true;
+  $('woError').textContent = '';
+}
+
+/** 触发服务器把当前工单结果导出为文件（json/csv） */
+async function downloadWorkOrder(format) {
+  if (!workOrderPayload) return;
+  const resp = await fetch(`/api/layout/stack/work-order?format=${encodeURIComponent(format)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(workOrderPayload),
+  });
+  if (!resp.ok) {
+    let msg = '导出失败';
+    try {
+      const data = await resp.json();
+      msg = data.error || msg;
+    } catch (_) { /* 忽略非 JSON 错误体 */ }
+    throw new Error(msg);
+  }
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = format === 'csv' ? 'work-order.csv' : 'work-order.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderWorkOrder(data) {
+  workOrderState = data;
+  const s = data.summary;
+
+  const shiftBlocks = data.shifts.map((shift) => {
+    const rows = shift.cuts.map((c) => `
+      <tr>
+        <td class="num">${c.cutInShift}</td>
+        <td class="num">${c.cutNo}</td>
+        <td class="num">${c.batchNo}</td>
+        <td>${c.orient === 'v' ? '竖切 ↑↓' : c.orient === 'h' ? '横切 ←→' : '—'}</td>
+        <td class="num">${c.region ? `${fmt(c.region.w)}×${fmt(c.region.h)}` : '—'}</td>
+        <td class="num">${fmt(c.position)}</td>
+        <td class="num">${fmt(c.cutLength)}</td>
+        <td class="num"><b>${c.sheetCount}</b></td>
+        <td class="members">${c.members.map((m) => `${m.sheetIndex}#${m.cutNo}`).join('、')}</td>
+      </tr>`).join('');
+    return `
+      <details class="wo-shift"${shift.shiftNo === 1 ? ' open' : ''}>
+        <summary>第 ${shift.shiftNo} 班 · ${shift.cutsTotal} 刀 · 涉及 ${shift.sheetsCut} 张次</summary>
+        <div class="wo-table-wrap">
+          <table class="wo-table">
+            <thead><tr>
+              <th class="num">班内刀次</th><th class="num">全局刀次</th><th class="num">来源批次</th>
+              <th>刀向</th><th class="num">待切区域 宽×高</th><th class="num">刀位</th>
+              <th class="num">切线长</th><th class="num">叠纸</th><th>所含纸张/原刀号</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </details>`;
+  }).join('');
+
+  const crossBlock = data.crossShiftDeps.length
+    ? `
+      <h4>跨班次依赖（${data.crossShiftDeps.length} 条，后班开切前需确认前班已完成）</h4>
+      <div class="wo-table-wrap">
+        <table class="wo-table wo-cross">
+          <thead><tr>
+            <th class="num">纸张</th><th class="num">子刀</th><th class="num">父刀</th>
+            <th class="num">父刀班次 / 刀次</th><th class="num">子刀班次 / 刀次</th>
+          </tr></thead>
+          <tbody>
+            ${data.crossShiftDeps.map((d) => `
+              <tr>
+                <td class="num">${d.sheetIndex}</td>
+                <td class="num">#${d.cutNo}</td>
+                <td class="num">#${d.parentCutNo}</td>
+                <td class="num">第 ${d.fromShift} 班 · 全局第 ${d.fromCutNo} 刀</td>
+                <td class="num">第 ${d.toShift} 班 · 全局第 ${d.toCutNo} 刀</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`
+    : '<p class="badge-ok">✔ 没有跨班次依赖：所有父刀均在同班次内完成。</p>';
+
+  const unassignedBlock = data.unassigned.length
+    ? `
+      <h4>未分配刀（${data.unassigned.length} 把）及原因</h4>
+      <div class="wo-table-wrap">
+        <table class="wo-table wo-unassigned">
+          <thead><tr>
+            <th class="num">纸张</th><th class="num">原刀号</th><th>原因</th>
+            <th class="num">来源批次</th><th>说明</th>
+          </tr></thead>
+          <tbody>
+            ${data.unassigned.map((u) => `
+              <tr>
+                <td class="num">${u.sheetIndex}</td>
+                <td class="num">#${u.cutNo}</td>
+                <td><span class="reason-tag r-${u.reason}">${WO_REASON_LABEL[u.reason] || u.reason}</span></td>
+                <td class="num">${u.batchNo == null ? '—' : u.batchNo}</td>
+                <td>${u.detail}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`
+    : '<p class="badge-ok">✔ 全部刀次均已分配到班次。</p>';
+
+  $('woResult').innerHTML = `
+    <div class="stack-summary stats">
+      <div class="stat">班次数：<b>${s.shiftsTotal}</b>（每班最多 ${data.maxCutsPerShift} 刀）</div>
+      <div class="stat">各班刀数：<b>${s.cutsPerShift.join('、')}</b></div>
+      <div class="stat">已分配 / 总刀次：<b>${s.batchesAssigned}</b> / ${s.batchesTotal}</div>
+      <div class="stat">未分配刀：<b>${s.unassignedCuts}</b></div>
+      <div class="stat">跨班次依赖：<b>${s.crossShiftDeps}</b> 条</div>
+      <div class="stat">总切线长度：<b>${fmt(s.totalLength)}</b> mm</div>
+    </div>
+    <div class="wo-exports">
+      <button type="button" id="woExportJson" class="btn btn-ghost">下载 JSON 工单</button>
+      <button type="button" id="woExportCsv" class="btn btn-ghost">下载 CSV 工单</button>
+    </div>
+    ${unassignedBlock}
+    ${crossBlock}
+    <h4>班次 / 刀次清单</h4>
+    ${shiftBlocks}
+  `;
+  $('woResult').hidden = false;
+  $('woExportJson').addEventListener('click', async () => {
+    try { await downloadWorkOrder('json'); }
+    catch (e) { $('woError').textContent = e.message; $('woError').hidden = false; }
+  });
+  $('woExportCsv').addEventListener('click', async () => {
+    try { await downloadWorkOrder('csv'); }
+    catch (e) { $('woError').textContent = e.message; $('woError').hidden = false; }
+  });
+}
+
+async function generateWorkOrder() {
+  const errBox = $('woError');
+  errBox.hidden = true;
+  errBox.textContent = '';
+  if (!stackState) {
+    errBox.textContent = '请先生成叠纸裁切排程。';
+    errBox.hidden = false;
+    return;
+  }
+  const maxCutsPerShift = Number($('woMaxCuts').value);
+  if (!(Number.isInteger(maxCutsPerShift) && maxCutsPerShift >= 1 && maxCutsPerShift <= 10000)) {
+    errBox.textContent = '每班最多刀次须为 1～10000 的整数。';
+    errBox.hidden = false;
+    return;
+  }
+  const maxSheetsPerBatch = Number($('woMaxSheets').value);
+  if (!(Number.isInteger(maxSheetsPerBatch) && maxSheetsPerBatch >= 1 && maxSheetsPerBatch <= 500)) {
+    errBox.textContent = '每批最多纸张须为 1～500 的整数。';
+    errBox.hidden = false;
+    return;
+  }
+  const payload = { schedule: stackState, maxCutsPerShift, maxSheetsPerBatch };
+  $('woGenerate').disabled = true;
+  try {
+    const resp = await fetch('/api/layout/stack/work-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '工单生成失败');
+    workOrderPayload = payload;
+    renderWorkOrder(data);
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.hidden = false;
+  } finally {
+    $('woGenerate').disabled = false;
   }
 }
 
@@ -1232,7 +1446,7 @@ document.querySelectorAll('input[name="mode"]').forEach((r) =>
     $('kitOpts').hidden = mode === 'single';
     if (mode === 'single') {
       setKitMode(false);
-      $('stackPanel').hidden = true; // 叠纸排程仅复用批量 / 多纸型结果
+      clearStackUi(); // 叠纸排程与执行工单仅复用批量 / 多纸型结果
     }
     // 成本模式下纸张宽高、纹向与常用纸度不适用（候选在纸型表格中录入）
     $('paperWLabel').hidden = cost;
@@ -1255,6 +1469,7 @@ $('kitMode').addEventListener('change', (e) => {
 $('addRow').addEventListener('click', () => addProductRow());
 $('addPaper').addEventListener('click', () => addPaperRow());
 $('stackGenerate').addEventListener('click', generateStack);
+$('woGenerate').addEventListener('click', generateWorkOrder);
 $('clearBtn').addEventListener('click', () => {
   $('productRows').innerHTML = '';
   addProductRow();

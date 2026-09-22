@@ -5,6 +5,7 @@ const express = require('express');
 const { layout, layoutBatch, layoutCompare } = require('./src/packer');
 const { layoutCostBatch } = require('./src/cost');
 const { stackSchedule } = require('./src/stack');
+const { workOrder, workOrderCsv } = require('./src/workorder');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -66,6 +67,31 @@ app.post('/api/layout/stack', (req, res) => {
   try {
     const body = req.body || {};
     const result = stackSchedule(body);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
+});
+
+// 执行工单：在叠纸排程结果上按班次容量（每班最多刀次、每批最多纸张）
+// 做稳定拓扑拆分，输出班次/刀次清单、跨班次依赖与未分配刀；?format=csv 直接下载
+app.post('/api/layout/stack/work-order', (req, res) => {
+  try {
+    const body = req.body || {};
+    const format = typeof req.query.format === 'string'
+      ? req.query.format
+      : (typeof body.format === 'string' ? body.format : 'json');
+    const result = workOrder(body);
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="work-order.csv"');
+      res.send(workOrderCsv(result));
+      return;
+    }
+    if (format !== 'json') {
+      res.status(400).json({ error: 'format 仅支持 json 或 csv' });
+      return;
+    }
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message || '输入无效' });
