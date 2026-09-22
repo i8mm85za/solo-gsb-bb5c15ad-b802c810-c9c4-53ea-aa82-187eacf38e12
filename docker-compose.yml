@@ -1,0 +1,11 @@
+services:
+  sheet-layout:
+    build: .
+    image: sheet-layout:latest
+    container_name: sheet-layout
+    ports:
+      # 默认映射到宿主机 3000；可用 `PORT=8080 docker compose up -d --build` 改宿主端口
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped

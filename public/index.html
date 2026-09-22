@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>单张纸直线裁切试排 / 多纸型成本排产</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>单张纸直线裁切试排</h1>
+    <p class="subtitle">断头台式裁切 · 每次一刀切到底、一分为二 · 成品允许旋转 90°（受纹向约束） · 刀缝不侵占成品 · 单张试排三策略方案比选 · 支持批量排产、多纸型成本排产与叠纸裁切排程</p>
+  </header>
+
+  <main class="layout">
+    <section class="panel form-panel">
+      <h2>纸张与刀缝</h2>
+      <div class="field-grid">
+        <label id="paperWLabel">纸张宽度 (mm)
+          <input type="number" id="paperW" value="889" min="1" step="0.5" />
+        </label>
+        <label id="paperHLabel">纸张高度 (mm)
+          <input type="number" id="paperH" value="1194" min="1" step="0.5" />
+        </label>
+        <label>刀缝宽度 (mm)
+          <input type="number" id="kerf" value="3" min="0" step="0.1" />
+        </label>
+        <label id="paperGrainLabel">纸张纹向
+          <select id="paperGrain">
+            <option value="along-width" selected>沿宽（↔）</option>
+            <option value="along-height">沿高（↕）</option>
+          </select>
+        </label>
+        <label class="preset" id="presetLabel">常用纸度
+          <select id="preset">
+            <option value="">— 自定义 —</option>
+            <option value="297x420">A3 297×420</option>
+            <option value="420x594">A2 420×594</option>
+            <option value="594x841">A1 594×841</option>
+            <option value="787x1092">正度全张 787×1092</option>
+            <option value="889x1194" selected>大度全张 889×1194</option>
+          </select>
+        </label>
+      </div>
+
+      <h2>排产模式</h2>
+      <div class="mode-switch">
+        <label><input type="radio" name="mode" value="single" checked /> 单张试排</label>
+        <label><input type="radio" name="mode" value="batch" /> 批量排产</label>
+        <label><input type="radio" name="mode" value="cost" /> 多纸型成本排产</label>
+      </div>
+      <div id="compareOpts" class="compare-opts">
+        <span class="compare-title">方案比选目标（单张试排按三种策略分别排样后择优）</span>
+        <div class="segmented" role="group" aria-label="比选目标">
+          <label><input type="radio" name="objective" value="more-pieces" checked /><span>优先多排</span></label>
+          <label><input type="radio" name="objective" value="fewer-cuts" /><span>优先省刀</span></label>
+        </div>
+        <p class="hint">同一输入分别按 <b>面积降序 / 最长边降序 / 宽高差降序</b> 三种确定性策略排样（断头台、刀缝、旋转与纹向规则一致）：
+          「优先多排」依次按已排件数、已排面积、刀数少、策略顺序择优；
+          「优先省刀」排除空方案后依次按刀数少、已排面积、已排件数、策略顺序择优。
+          全部排不进时不指定最佳方案。</p>
+      </div>
+      <div id="isolateOpts" class="isolate-opts" hidden>
+        <label class="check-line">
+          <input type="checkbox" id="isolateOrders" />
+          <span><b>每张纸仅排一个订单</b>（订单隔离排产）</span>
+        </label>
+        <p class="hint">开启后，批量每轮分别试排各未完成订单，按本张已排面积、件数、录入顺序选订单；
+          多纸型每轮联合比较「订单 × 纸型」候选，仍按单位已排面积成本、件数、录入顺序决胜，
+          选中后只扣减该订单与该纸型库存。任一剩余订单在所有可用纸型均无进展时返回受阻订单，不生成空白纸、不误扣库存。
+          未填写订单号的行视为同组且不影响其他订单。</p>
+      </div>
+      <div id="kitOpts" class="isolate-opts" hidden>
+        <label class="check-line">
+          <input type="checkbox" id="kitMode" />
+          <span><b>成套生产</b>（每张纸只提交完整套，禁止贪心多排形成半套）</span>
+        </label>
+        <label class="kit-sets-line">计划套数（套）
+          <input type="number" id="plannedSets" value="10" min="1" max="100000" step="1" />
+        </label>
+        <p class="hint">勾选后，以每种成品的<b>每套用量</b>（成品表新增列）按比例组成完整套；
+          服务端每张纸都用现有断头台 / 刀缝 / 纹向规则试排，选择<b>完整套数最多</b>的布局：
+          批量模式逐张扣减直到做满计划套数；多纸型模式同套数下再按单位已排面积成本、件数、录入顺序选纸。
+          剩余材料组不成一整套即 <code>no-progress</code>，本轮不扣库存。成套与订单隔离不能同时开启。</p>
+      </div>
+      <div id="batchOpts" class="batch-opts" hidden>
+        <label>最多用纸张数（张）
+          <input type="number" id="maxSheets" value="10" min="1" max="500" step="1" />
+        </label>
+        <p class="hint">按当前规则逐张排样；全部排完、达到用纸上限，或某张纸排不进任何成品时停止（无进展立即止损，不生成空白纸）。</p>
+      </div>
+      <div id="costOpts" class="cost-opts" hidden>
+        <p class="hint">录入 2～8 种候选纸张（单价须大于 0、张数为 0～500 整数；纹向为沿宽/沿高）。每轮对有库存且放得下余件的纸型试排
+          （只采用纸张纹向与成品要求平行的朝向），按
+          <b>单位已排成品面积成本最低</b>，同分比<b>已排件数</b>，再同分按<b>录入顺序</b>选出下一张；空白纸不计入结果。</p>
+        <div class="papers-head">
+          <span>纸张名称</span><span>宽 mm</span><span>高 mm</span><span>纹向</span><span>单价（元/张）</span><span>可用张数</span><span></span>
+        </div>
+        <div id="paperRows"></div>
+        <button type="button" id="addPaper" class="btn btn-ghost">＋ 添加纸型</button>
+      </div>
+
+      <h2>成品清单</h2>
+      <p class="hint products-hint">纹向要求：成品纹向须与纸张纹向平行——「沿自身宽/高」指纸张纹向需平行于成品的宽/高边；不限则两种朝向均可。
+        订单号可选：填写后可在批量/多纸型模式开启「每张纸仅排一个订单」做订单隔离排产。
+        <b id="perSetHint" hidden>成套生产：请为每种成品填写「每套用量」（正整数，该品种每套需要几件），数量列将被忽略，总需求＝每套用量 × 计划套数。</b></p>
+      <div class="products-head" id="productsHead">
+        <span>名称（可选）</span><span>订单号（可选）</span><span>宽 mm</span><span>高 mm</span><span class="qty-head">数量</span><span class="perset-head" hidden>每套用量</span><span>纹向</span><span></span>
+      </div>
+      <div id="productRows"></div>
+      <button type="button" id="addRow" class="btn btn-ghost">＋ 添加成品</button>
+
+      <div class="actions">
+        <button type="button" id="generate" class="btn btn-primary">生成裁切方案</button>
+        <button type="button" id="clearBtn" class="btn btn-ghost">清空重填</button>
+      </div>
+      <div id="formError" class="form-error" hidden></div>
+    </section>
+
+    <section class="panel result-panel">
+      <h2>排料结果</h2>
+      <div id="compareBar" class="compare-bar" hidden></div>
+      <div id="batchBar" class="batch-bar" hidden></div>
+      <div id="costBar" class="batch-bar" hidden></div>
+      <div id="kitProgress" class="kit-progress" hidden></div>
+      <div id="stackPanel" class="stack-panel" hidden>
+        <h3>叠纸裁切排程</h3>
+        <div class="stack-controls">
+          <label>叠纸上限（张/批）
+            <input type="number" id="stackLimit" value="3" min="1" max="500" step="1" />
+          </label>
+          <button type="button" id="stackGenerate" class="btn btn-primary">生成排程</button>
+          <p class="hint">复用当前批量 / 多纸型排产结果，把各张纸的断头台切割树合成可执行刀次：
+            仅当待切区域<b>宽高、刀向、刀位、刀缝</b>一致时合并，每批不超过叠纸上限；
+            子刀必须等所在纸张的父刀完成后才可入批。每轮优先合并张数最多、再按总切线长度、纸张序号与原刀序决胜。</p>
+        </div>
+        <div id="stackError" class="form-error" hidden></div>
+        <div id="stackResult" class="stack-result" hidden></div>
+      </div>
+      <div id="orderSummary" class="order-summary" hidden></div>
+      <div id="sheetTabs" class="sheet-tabs" hidden></div>
+      <div id="sheetMeta" class="sheet-meta" hidden></div>
+      <div id="costUsage" class="cost-usage" hidden></div>
+      <div id="costMetrics" class="cost-metrics" hidden></div>
+      <div id="stats" class="stats"></div>
+      <div id="svgWrap" class="svg-wrap">
+        <div class="placeholder">填写左侧参数后点击「生成裁切方案」</div>
+      </div>
+      <div id="cutList" class="cut-list"></div>
+      <div id="rankList" class="rank-wrap" hidden></div>
+      <div id="unplaced" class="unplaced"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    坐标原点在纸面左上角，所有尺寸单位 mm；红色虚线为裁切中心线，序号即下刀顺序。
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
