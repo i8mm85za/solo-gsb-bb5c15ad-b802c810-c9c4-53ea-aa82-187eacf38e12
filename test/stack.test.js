@@ -110,6 +110,36 @@ test('叠纸排程：任何子刀所在批次不早于其父刀批次', () => {
   });
 });
 
+test('叠纸排程：批次附带父刀派生依赖 dependsOn（升序去重、均早于本批）', () => {
+  const r = layoutBatch({
+    paperW: 420, paperH: 300, kerf: 2, maxSheets: 6,
+    products: [
+      { width: 150, height: 120, quantity: 20 },
+      { width: 80, height: 60, quantity: 24 },
+    ],
+  });
+  const sched = stackSchedule({ stackLimit: 2, sheets: r.sheets });
+  const lookup = batchLookup(sched);
+  // 每批的 dependsOn 恰好覆盖其成员刀父刀所在批次
+  const expect = new Map(); // batchNo → Set(依赖批次)
+  r.sheets.forEach((sh, i) => {
+    const parents = parentByCutNo(sh);
+    for (const c of sh.cuts) {
+      if (!parents.has(c.n)) continue;
+      const childBatch = lookup.get(`${i + 1}:${c.n}`);
+      const parentBatch = lookup.get(`${i + 1}:${parents.get(c.n)}`);
+      if (!expect.has(childBatch)) expect.set(childBatch, new Set());
+      expect.get(childBatch).add(parentBatch);
+    }
+  });
+  assert.ok(expect.size > 0, '夹具需要至少一条父子刀关系');
+  for (const b of sched.batches) {
+    const want = [...(expect.get(b.batchNo) || [])].sort((x, y) => x - y);
+    assert.deepStrictEqual(b.dependsOn, want);
+    assert.ok(b.dependsOn.every((d) => d < b.batchNo), '依赖批次必须先于本批');
+  }
+});
+
 /* ---------------- 叠纸上限 ---------------- */
 
 test('叠纸排程：同批不超过叠纸上限，超出的同刀纸张进入后续批次', () => {

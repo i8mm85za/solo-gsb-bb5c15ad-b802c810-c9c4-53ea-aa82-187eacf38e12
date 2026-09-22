@@ -25,7 +25,9 @@
  * 纸张序号、原刀序纳入本批，至多 stackLimit 张（含种子纸）。
  *
  * 每批至少提交一刀、每张纸各批至多一刀，刀次总数有限，算法必然终止；
- * 所有刀最终都会被排入（无“永远未排”的刀）。`unmerged` 仅给出诊断说明：
+ * 所有刀最终都会被排入（无“永远未排”的刀）。每批附带 `dependsOn`：
+ * 本批成员刀的父刀所在批次号（升序去重），即批次级的直接先后约束，
+ * 供执行工单（work-order）做稳定拓扑拆分。`unmerged` 仅给出诊断说明：
  *  - 'solo'：该刀成批时没有任何可合并伙伴（单张独刀）；
  *  - 'stack-limit'：同刀纸张已达叠纸上限，该刀推迟到后续批次；
  *  - 'waiting-parent'：生成该批时该刀仍在等待所在纸张的父刀完成（随后已正常入批）；
@@ -316,6 +318,7 @@ function stackSchedule(input) {
 
     // 提交本批：移出可执行、标记完成、解锁直接子刀
     const memberOut = [];
+    const dependsOn = new Set(); // 父刀所在批次（精确到批次号的直接依赖，供执行工单拓扑拆分）
     for (const [si, ci] of best.picked) {
       readyByKey.get(best.key).delete(`${si}:${ci}`);
       done[si].add(ci);
@@ -323,6 +326,8 @@ function stackSchedule(input) {
       memberOut.push({ sheetIndex: sheets[si].index, cutNo: sheets[si].cuts[ci].n });
       totalCuts += 1;
       totalLength += sheets[si].cuts[ci].length;
+      const p = parents[si][ci];
+      if (p >= 0) dependsOn.add(batchOf.get(`${si}:${p}`));
       for (const child of children[si][ci]) addReady(si, child);
     }
     if (readyByKey.get(best.key).size === 0) readyByKey.delete(best.key);
@@ -338,6 +343,7 @@ function stackSchedule(input) {
       totalLength: round3(seedCut.length * best.picked.length),
       sheetCount: best.picked.length,
       capped: best.rawSheets > best.picked.length,
+      dependsOn: [...dependsOn].sort((a, b) => a - b),
       members: memberOut,
     });
   }

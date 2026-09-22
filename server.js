@@ -5,6 +5,7 @@ const express = require('express');
 const { layout, layoutBatch, layoutCompare } = require('./src/packer');
 const { layoutCostBatch } = require('./src/cost');
 const { stackSchedule } = require('./src/stack');
+const { workOrder, workOrderCsv } = require('./src/workorder');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -72,8 +73,35 @@ app.post('/api/layout/stack', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`单张纸裁切试排服务已启动: http://localhost:${PORT}`);
+// 执行工单：复用叠纸排程结果，按班次容量（每班最多刀次、每批最多纸张）
+// 对批次做稳定拓扑拆分，输出班次/刀次清单、跨班次依赖与未分配刀；
+// ?format=csv（或请求体 format:'csv'）时直接返回可下载的 CSV 文件
+app.post('/api/layout/stack/work-order', (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = workOrder(body);
+    const format = String(req.query.format || body.format || 'json').toLowerCase();
+    if (format === 'csv') {
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="work-order.csv"');
+      res.send(workOrderCsv(result));
+      return;
+    }
+    if (format !== 'json') {
+      throw new Error('format 只支持 json 或 csv');
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message || '输入无效' });
+  }
 });
+
+// 直接运行（node server.js / Docker CMD）时才监听端口；
+// 被测试 require 时仅导出 app，由测试自行监听随机端口
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`单张纸裁切试排服务已启动: http://localhost:${PORT}`);
+  });
+}
 
 module.exports = app;

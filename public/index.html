@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <h1>单张纸直线裁切试排</h1>
-    <p class="subtitle">断头台式裁切 · 每次一刀切到底、一分为二 · 成品允许旋转 90°（受纹向约束） · 刀缝不侵占成品 · 单张试排三策略方案比选 · 支持批量排产、多纸型成本排产与叠纸裁切排程</p>
+    <p class="subtitle">断头台式裁切 · 每次一刀切到底、一分为二 · 成品允许旋转 90°（受纹向约束） · 刀缝不侵占成品 · 单张试排三策略方案比选 · 支持批量排产、多纸型成本排产、叠纸裁切排程与执行工单导出</p>
   </header>
 
   <main class="layout">
@@ -136,6 +136,26 @@
         </div>
         <div id="stackError" class="form-error" hidden></div>
         <div id="stackResult" class="stack-result" hidden></div>
+        <div id="workOrderPanel" class="workorder-panel" hidden>
+          <h3>执行工单</h3>
+          <div class="stack-controls">
+            <label>每班最多刀次（批）
+              <input type="number" id="maxCutsPerShift" value="20" min="1" max="500" step="1" />
+            </label>
+            <label>每批最多纸张（张）
+              <input type="number" id="maxSheetsPerBatch" value="3" min="1" max="500" step="1" />
+            </label>
+            <button type="button" id="workOrderGenerate" class="btn btn-primary">生成执行工单</button>
+            <button type="button" id="workOrderJson" class="btn btn-ghost" disabled>导出 JSON</button>
+            <button type="button" id="workOrderCsv" class="btn btn-ghost" disabled>导出 CSV</button>
+            <p class="hint">按上方排程结果与班次容量，把刀次批次按父刀依赖<b>稳定拓扑拆分</b>成班次：
+              每班不超过「每班最多刀次」个批次，任何批次的叠纸张数不得超过「每批最多纸张」；
+              批次内纸张顺序保持不变。工单标出<b>跨班次依赖</b>与<b>未分配刀及原因</b>，
+              可导出 JSON / CSV 下达到车间。</p>
+          </div>
+          <div id="workOrderError" class="form-error" hidden></div>
+          <div id="workOrderResult" class="workorder-result" hidden></div>
+        </div>
       </div>
       <div id="orderSummary" class="order-summary" hidden></div>
       <div id="sheetTabs" class="sheet-tabs" hidden></div>

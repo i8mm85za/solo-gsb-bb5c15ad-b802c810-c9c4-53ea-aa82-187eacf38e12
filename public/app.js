@@ -983,6 +983,7 @@ function showStackPanel(data) {
   $('stackResult').innerHTML = '';
   $('stackError').hidden = true;
   $('stackError').textContent = '';
+  clearWorkOrderUi();
   $('stackPanel').hidden = false;
 }
 
@@ -994,6 +995,7 @@ function clearStackUi() {
   $('stackResult').innerHTML = '';
   $('stackError').hidden = true;
   $('stackError').textContent = '';
+  clearWorkOrderUi();
 }
 
 const STACK_REASON_LABEL = {
@@ -1102,6 +1104,11 @@ function renderStack(data) {
     ${unmergedBlock}
   `;
   $('stackResult').hidden = false;
+
+  // 排程更新后：执行工单需基于新结果重新生成；每批最多纸张默认对齐叠纸上限
+  resetWorkOrderUi();
+  $('maxSheetsPerBatch').value = data.stackLimit;
+  $('workOrderPanel').hidden = false;
 }
 
 async function generateStack() {
@@ -1135,6 +1142,213 @@ async function generateStack() {
     errBox.hidden = false;
   } finally {
     $('stackGenerate').disabled = false;
+  }
+}
+
+/* ---------------- 执行工单（复用叠纸排程结果，按班次容量拆分） ---------------- */
+
+let workOrderState = null; // 最近一次执行工单结果
+
+/** 清空工单结果与错误（保留面板本身） */
+function resetWorkOrderUi() {
+  workOrderState = null;
+  $('workOrderResult').hidden = true;
+  $('workOrderResult').innerHTML = '';
+  $('workOrderError').hidden = true;
+  $('workOrderError').textContent = '';
+  $('workOrderJson').disabled = true;
+  $('workOrderCsv').disabled = true;
+}
+
+/** 连面板一起隐藏（排产数据失效时调用） */
+function clearWorkOrderUi() {
+  resetWorkOrderUi();
+  $('workOrderPanel').hidden = true;
+}
+
+const WORKORDER_REASON_LABEL = {
+  'no-cuts': '无需切割',
+  'not-scheduled': '未在批次中',
+};
+
+function renderWorkOrder(data) {
+  workOrderState = data;
+  const s = data.summary;
+  const shiftOfBatch = new Map();
+  data.shifts.forEach((sh) => sh.batches.forEach((b) => shiftOfBatch.set(b.batchNo, sh.shiftNo)));
+
+  const shiftBlocks = data.shifts.map((sh) => {
+    const rows = sh.batches.map((b) => {
+      const papers = b.members.map((m) => `${m.sheetIndex}#${m.cutNo}`).join('、');
+      const deps = b.dependsOn.length
+        ? b.dependsOn.map((d) => {
+            const cross = b.crossShiftDependsOn.includes(d);
+            return cross
+              ? `<span class="dep-tag cross" title="跨班次依赖：批次 ${d} 在班次 ${shiftOfBatch.get(d)}">${d}⇧</span>`
+              : `<span class="dep-tag">${d}</span>`;
+          }).join('')
+        : '—';
+      return `
+        <tr>
+          <td><b>${b.batchNo}</b></td>
+          <td>${b.orient === 'v' ? '竖切 ↑↓' : b.orient === 'h' ? '横切 ←→' : '—'}</td>
+          <td class="num">${b.region ? `${fmt(b.region.w)}×${fmt(b.region.h)}` : '—'}</td>
+          <td class="num">${b.position == null ? '—' : fmt(b.position)}</td>
+          <td class="num">${b.kerf == null ? '—' : fmt(b.kerf)}</td>
+          <td class="num">${b.cutLength == null ? '—' : fmt(b.cutLength)}</td>
+          <td class="num"><b>${b.sheetCount}</b></td>
+          <td>${papers}</td>
+          <td>${deps}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <div class="shift-block">
+        <h4>班次 ${sh.shiftNo}<span class="shift-meta">${sh.batchCount} 个批次 · ${sh.cutCount} 刀 · 涉及 ${sh.sheetCount} 张纸</span></h4>
+        <div class="stack-table-wrap">
+          <table class="stack-batches workorder-batches">
+            <thead><tr>
+              <th>批次</th><th>刀向</th><th>待切区域 宽×高 (mm)</th><th>刀位 (mm)</th>
+              <th>刀缝 (mm)</th><th>切线长 (mm)</th><th>叠纸张数</th>
+              <th>所含纸张/原刀号（纸#刀）</th><th>依赖批次（⇧ 为跨班次）</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }).join('');
+
+  const unassignedBlock = data.unassigned.length
+    ? `
+      <h4>未分配刀（${data.unassigned.length} 条）</h4>
+      <div class="stack-table-wrap">
+        <table class="stack-unmerged">
+          <thead><tr><th>纸张</th><th>原刀号</th><th>原因</th><th>说明</th></tr></thead>
+          <tbody>
+            ${data.unassigned.map((u) => `
+              <tr class="${u.reason}">
+                <td>${u.sheetIndex}</td>
+                <td>${u.cutNo == null ? '—' : `#${u.cutNo}`}</td>
+                <td><span class="reason-tag r-${u.reason}">${WORKORDER_REASON_LABEL[u.reason] || u.reason}</span></td>
+                <td>${u.detail}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`
+    : '<p class="badge-ok">✔ 所有刀次均已分配到班次。</p>';
+
+  $('workOrderResult').innerHTML = `
+    <div class="stack-summary stats">
+      <div class="stat">班次：<b>${s.shiftsTotal}</b> 个</div>
+      <div class="stat">刀次（批）：<b>${s.batchesTotal}</b></div>
+      <div class="stat">总刀数：<b>${s.cutsTotal}</b></div>
+      <div class="stat">单班最多批：<b>${s.maxBatchesPerShift}</b>（容量 ${data.capacity.maxCutsPerShift}）</div>
+      <div class="stat">每批最多纸张：<b>${data.capacity.maxSheetsPerBatch}</b> 张</div>
+      <div class="stat">跨班次依赖：<b>${s.crossShiftDependencies}</b> 条</div>
+      <div class="stat">未分配刀：<b>${s.unassignedTotal}</b></div>
+    </div>
+    ${shiftBlocks || '<p class="placeholder" style="padding:20px">排程结果中没有刀次批次。</p>'}
+    ${unassignedBlock}
+  `;
+  $('workOrderResult').hidden = false;
+  $('workOrderJson').disabled = false;
+  $('workOrderCsv').disabled = false;
+}
+
+function workOrderPayload() {
+  const maxCutsPerShift = Number($('maxCutsPerShift').value);
+  const maxSheetsPerBatch = Number($('maxSheetsPerBatch').value);
+  if (!(Number.isInteger(maxCutsPerShift) && maxCutsPerShift >= 1 && maxCutsPerShift <= 500)) {
+    throw new Error('每班最多刀次须为 1～500 的整数。');
+  }
+  if (!(Number.isInteger(maxSheetsPerBatch) && maxSheetsPerBatch >= 1 && maxSheetsPerBatch <= 500)) {
+    throw new Error('每批最多纸张须为 1～500 的整数。');
+  }
+  return { schedule: stackState, capacity: { maxCutsPerShift, maxSheetsPerBatch } };
+}
+
+async function generateWorkOrder() {
+  const errBox = $('workOrderError');
+  errBox.hidden = true;
+  errBox.textContent = '';
+  if (!stackState) {
+    errBox.textContent = '请先生成叠纸裁切排程，再生成执行工单。';
+    errBox.hidden = false;
+    return;
+  }
+  let payload;
+  try {
+    payload = workOrderPayload();
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.hidden = false;
+    return;
+  }
+  $('workOrderGenerate').disabled = true;
+  try {
+    const resp = await fetch('/api/layout/stack/work-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || '工单生成失败');
+    renderWorkOrder(data);
+  } catch (e) {
+    resetWorkOrderUi();
+    errBox.textContent = e.message;
+    errBox.hidden = false;
+  } finally {
+    $('workOrderGenerate').disabled = false;
+  }
+}
+
+function downloadFile(name, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportWorkOrderJson() {
+  if (!workOrderState) return;
+  downloadFile('work-order.json', JSON.stringify(workOrderState, null, 2), 'application/json');
+}
+
+async function exportWorkOrderCsv() {
+  if (!workOrderState) return;
+  const errBox = $('workOrderError');
+  errBox.hidden = true;
+  errBox.textContent = '';
+  let payload;
+  try {
+    payload = workOrderPayload();
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.hidden = false;
+    return;
+  }
+  $('workOrderCsv').disabled = true;
+  try {
+    const resp = await fetch('/api/layout/stack/work-order?format=csv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const data = await resp.json();
+      throw new Error(data.error || 'CSV 导出失败');
+    }
+    downloadFile('work-order.csv', await resp.text(), 'text/csv;charset=utf-8');
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.hidden = false;
+  } finally {
+    $('workOrderCsv').disabled = false;
   }
 }
 
@@ -1255,6 +1469,9 @@ $('kitMode').addEventListener('change', (e) => {
 $('addRow').addEventListener('click', () => addProductRow());
 $('addPaper').addEventListener('click', () => addPaperRow());
 $('stackGenerate').addEventListener('click', generateStack);
+$('workOrderGenerate').addEventListener('click', generateWorkOrder);
+$('workOrderJson').addEventListener('click', exportWorkOrderJson);
+$('workOrderCsv').addEventListener('click', exportWorkOrderCsv);
 $('clearBtn').addEventListener('click', () => {
   $('productRows').innerHTML = '';
   addProductRow();

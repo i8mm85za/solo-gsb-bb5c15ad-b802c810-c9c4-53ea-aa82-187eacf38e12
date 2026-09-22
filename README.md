@@ -8,6 +8,8 @@
 禁止贪心多排某一品种形成无法交付的半套。
 在批量 / 多纸型结果旁还可进行**叠纸裁切排程**：按待切区域宽高、刀向、刀位、刀缝一致的规则
 把各张纸的切割树合批为可执行刀次（受叠纸上限与父刀先后约束），输出批次表、每张纸进度与未排原因。
+排程之上可再生成**执行工单**：按操作者指定的班次容量（每班最多刀次、每批最多纸张）
+对刀次批次做稳定拓扑拆分，输出班次/刀次清单、跨班次依赖与未分配刀原因，并可导出 JSON / CSV。
 
 ## 裁切规则
 
@@ -264,7 +266,9 @@
 - **`batches`（批次表）**：批序号 `batchNo`、刀向 `orient`、
   待切区域宽高 `region`、刀位 `position`（mm）、刀缝 `kerf`、
   单刀切线长 `cutLength`、批切线总长 `totalLength`、叠纸张数 `sheetCount`、
-  是否因上限封顶 `capped`，以及 **`members`：所含纸张序号与原刀号
+  是否因上限封顶 `capped`，**`dependsOn`：本批成员刀的父刀所在批次号
+  （升序去重，即批次级直接先后约束，供执行工单拓扑拆分）**，
+  以及 **`members`：所含纸张序号与原刀号
   （`{sheetIndex, cutNo}`，即“第几张纸的切割树中第几号刀”）**；
 - **`sheets`（每张纸进度）**：纸张序号、轮次/纸型/订单（成本/隔离结果透传）、
   纸面宽高与刀缝、总刀数、已排刀数、合批刀数/独刀数、所在批次号序列；
@@ -278,6 +282,50 @@
 **刀次批次表**、**每张纸裁切进度**（进度条与所在批次序列）与未排原因表；
 切换到单张试排或重新生成排产方案时该面板自动隐藏/重置。
 **排产结果为空（没有任何纸张）或叠纸上限非法（非 1～500 的整数）时返回 HTTP 400。**
+
+## 执行工单（按班次容量拆分刀次）
+
+生成叠纸裁切排程后，结果下方出现**执行工单**面板：录入班次容量——
+**每班最多刀次**（一个批次即一次落刀，1～500 的整数）与
+**每批最多纸张**（1～500 的整数，不得小于排程中任何批次的叠纸张数），
+点击「生成执行工单」后，服务端把排程的刀次批次拆分成可下达的班次清单。
+
+**拆分规则（确定性）**：
+
+1. 批次级先后约束来自排程结果每批的 **`dependsOn`（父刀所在批次）**；
+   请求还可用 `dependencies: [{ batch, dependsOn }]` 追加约束
+   （如换刀、换纸、机台限制），与自带依赖合并；
+2. 对全部批次做**稳定拓扑排序**（Kahn，就绪集中永远先取批次号最小者）；
+3. 按拓扑序**连续切段**，每段不超过「每班最多刀次」个批次，即为一个班次；
+4. **批次内纸张（members）顺序原样保留**，绝不重排。
+
+拆分后标出：
+
+- **跨班次依赖**：依赖批次位于前序班次的依赖边
+  （逐批 `crossShiftDependsOn` + 顶层 `dependencies` 清单，含双方班次号）；
+- **未分配刀及原因**：`no-cuts`（该纸没有刀次，无需分配班次）、
+  `not-scheduled`（排程结果的批次中找不到该刀，无法分配班次）。
+
+接口 `POST /api/layout/stack/work-order` 返回：
+
+- `capacity`：本次采用的班次容量；`source` / `stackLimit`：自排程结果透传；
+- `summary`：班次数 `shiftsTotal`、刀次批数 `batchesTotal`、总刀数 `cutsTotal`、
+  单班最多批 `maxBatchesPerShift`、跨班次依赖条数 `crossShiftDependencies`、
+  未分配刀条数 `unassignedTotal`；
+- **`shifts`（班次清单）**：每班含 `shiftNo`、`batchCount`、`cutCount`、
+  涉及纸张数 `sheetCount` 与逐批记录（批次几何信息、`members`、
+  `dependsOn`、`crossShiftDependsOn`）；
+- **`dependencies`**：全部依赖边（`batch`/`dependsOn`/双方班次号/是否跨班次）；
+- **`unassigned`**：未分配刀（纸张、原刀号、原因、中文说明）。
+
+**导出**：默认返回 JSON；加 `?format=csv`（或请求体 `format: 'csv'`）时返回
+**可下载 CSV**（`Content-Disposition: attachment`，UTF-8 带 BOM，Excel 可直接打开，
+含逐批清单与未分配刀段）。前端提供「导出 JSON」「导出 CSV」按钮直接下载。
+
+**以下情况返回 HTTP 400**：容量缺失或非法（非 1～500 的整数）；
+某批次叠纸张数超过「每批最多纸张」（需降低叠纸上限重新排程）；
+依赖引用不存在的批次、批次依赖自身，或依赖构成**环**；
+排程结果缺少批次表、批次成员非法等。
 
 ## 单条命令启动（需要 Docker + Docker Compose）
 
@@ -340,6 +388,11 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
      所含纸张/原刀号）与**每张纸裁切进度**（总刀数、已排、合批/独刀、所在批次），
      并列出未排原因（单张独刀、受叠纸上限制约推迟、等待父刀、该纸无需切割）；
      叠纸上限非法或没有任何纸张时提示错误（接口返回 400）；
+   - 排程结果下方的**执行工单**面板：录入**每班最多刀次**与**每批最多纸张**后
+     点「生成执行工单」，按父刀依赖稳定拓扑拆分成**班次清单**
+     （逐批标注依赖批次，跨班次依赖以 ⇧ 红色标记），并列出未分配刀及原因；
+     「导出 JSON」「导出 CSV」按钮把工单下载到本地（CSV 带 BOM，Excel 可直接打开）；
+     容量非法、批次超容或依赖成环时提示错误（接口返回 400）；
    - 「排不下的成品 / 未排完的成品」表列出每种规格的纹向要求、已排/需求数量和剩余件数，
      并标明受阻原因（纹向受限 / 尺寸不足）。
 
@@ -351,6 +404,7 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 - `POST /api/layout/batch` — 批量排产（在单张入参基础上增加 `maxSheets` 字段，可选 `isolateOrders` 与成品行 `orderNo`）
 - `POST /api/layout/cost` — 多纸型成本排产（入参为 `kerf`、`papers`、`products`，可选 `isolateOrders` 与成品行 `orderNo`）
 - `POST /api/layout/stack` — 叠纸裁切排程（复用批量/成本结果的 `sheets`，另需 `stackLimit` 叠纸上限；可带 `source`）
+- `POST /api/layout/stack/work-order` — 执行工单（入参为排程结果 `schedule` 与班次容量 `capacity`，可带追加依赖 `dependencies`；`?format=csv` 返回可下载 CSV）
 
 单张请求示例（含纹向）：
 
@@ -511,32 +565,74 @@ npm start          # 默认 http://localhost:3000，可用 PORT=8080 npm start �
 
 返回包含 `stackLimit`/`source`、`summary`（总刀数、刀次批数、合批/独刀批数、
 单批最多叠纸数、总切线长度）、`batches`（每批刀向、待切区域宽高、刀位、刀缝、
-切线长、叠纸张数与 `members` 所含纸张/原刀号）、`sheets`（每张纸总刀数、
-已排刀数、合批/独刀数、所在批次序列）与 `unmerged`（`solo` 单刀、
-`stack-limit` 受上限推迟、`waiting-parent` 等待父刀、`no-cuts` 无刀纸张）。
+切线长、叠纸张数、父刀派生依赖 `dependsOn` 与 `members` 所含纸张/原刀号）、
+`sheets`（每张纸总刀数、已排刀数、合批/独刀数、所在批次序列）与 `unmerged`
+（`solo` 单刀、`stack-limit` 受上限推迟、`waiting-parent` 等待父刀、`no-cuts` 无刀纸张）。
 成本结果以 `sheets[i].layout` 提供切割树时 `source` 自动识别为 `cost`，
 轮次、纸型与订单号随每张纸透传。`stackLimit` 不是 1～500 的正整数、
 `sheets` 缺失或为空数组时返回 HTTP 400。
+
+执行工单请求示例（把上一步 `/api/layout/stack` 的完整返回作为 `schedule`，
+加上班次容量；也可把排程结果字段直接平铺在顶层、与 `capacity` 并列）：
+
+```json
+{
+  "schedule": {
+    "source": "batch",
+    "stackLimit": 3,
+    "batches": [
+      { "batchNo": 1, "orient": "h", "region": { "w": 889, "h": 1194 },
+        "position": 285, "kerf": 3, "cutLength": 889, "sheetCount": 2,
+        "dependsOn": [],
+        "members": [ { "sheetIndex": 1, "cutNo": 1 }, { "sheetIndex": 2, "cutNo": 1 } ] },
+      { "batchNo": 2, "orient": "v", "region": { "w": 889, "h": 906 },
+        "position": 444.5, "kerf": 3, "cutLength": 906, "sheetCount": 2,
+        "dependsOn": [1],
+        "members": [ { "sheetIndex": 1, "cutNo": 2 }, { "sheetIndex": 2, "cutNo": 2 } ] }
+    ],
+    "sheets": [
+      { "index": 1, "cutsTotal": 2, "hasCuts": true },
+      { "index": 2, "cutsTotal": 2, "hasCuts": true }
+    ]
+  },
+  "capacity": { "maxCutsPerShift": 1, "maxSheetsPerBatch": 3 },
+  "dependencies": []
+}
+```
+
+返回包含 `capacity`、`summary`（班次数、刀次批数、总刀数、单班最多批、
+跨班次依赖条数、未分配刀条数）、`shifts`（逐班次：批次几何信息、
+`members` 纸张/原刀号、`dependsOn` 与 `crossShiftDependsOn` 跨班次依赖）、
+`dependencies`（全部依赖边及双方班次号）与 `unassigned`
+（`no-cuts` 无刀纸张、`not-scheduled` 批次中缺失的刀）。
+上例中每班最多 1 个批次：批次 1 在班次 1、批次 2 在班次 2，
+`dependencies` 中 `批次2 → 批次1` 被标记为跨班次依赖。
+加 `?format=csv` 时返回 `Content-Disposition: attachment` 的 CSV 文件
+（UTF-8 带 BOM，含逐批清单与未分配刀段）。
+容量缺失或非法（非 1～500 的整数）、某批次叠纸张数超过 `maxSheetsPerBatch`、
+依赖引用不存在的批次、批次自依赖或依赖成环时返回 HTTP 400。
 
 ## 项目结构
 
 ```
 .
-├── server.js            # Express 入口：静态页面 + /api/layout + /api/layout/compare + /api/layout/batch + /api/layout/cost + /api/layout/stack
+├── server.js            # Express 入口：静态页面 + /api/layout + /api/layout/compare + /api/layout/batch + /api/layout/cost + /api/layout/stack + /api/layout/stack/work-order
 ├── src/packer.js        # 断头台二分排样核心（单张 layout + 三策略方案比选 layoutCompare + 固定纸型批量 layoutBatch，含纹向、订单隔离与成套生产）
 ├── src/cost.js          # 多纸型成本排产（逐轮试排候选、单位面积成本择优、库存成本核算、订单×纸型隔离与成套生产）
-├── src/stack.js         # 叠纸裁切排程（复用批量/成本切割树，按区域宽高/刀向/刀位/刀缝合批、父刀约束与确定性选批）
+├── src/stack.js         # 叠纸裁切排程（复用批量/成本切割树，按区域宽高/刀向/刀位/刀缝合批、父刀约束与确定性选批，批次附 dependsOn）
+├── src/workorder.js     # 执行工单（按班次容量对排程批次做稳定拓扑拆分、跨班次依赖与未分配刀诊断、CSV 导出）
 ├── public/
-│   ├── index.html       # 单页界面（单张/批量/多纸型三种模式，纹向、订单号与隔离开关录入，单张模式含比选目标分段控件，批量/成本结果含叠纸排程面板）
+│   ├── index.html       # 单页界面（单张/批量/多纸型三种模式，纹向、订单号与隔离开关录入，单张模式含比选目标分段控件，批量/成本结果含叠纸排程与执行工单面板）
 │   ├── style.css
-│   └── app.js           # 表单交互 + SVG 渲染 + 比选标签页 + 逐张查看 + 成本/订单汇总 + 叠纸批次表与逐纸进度（原生 JS）
+│   └── app.js           # 表单交互 + SVG 渲染 + 比选标签页 + 逐张查看 + 成本/订单汇总 + 叠纸批次表与逐纸进度 + 执行工单班次清单与 JSON/CSV 导出（原生 JS）
 ├── test/smoke.test.js   # 单张/固定纸型批量算法不变量测试（node:test，无额外依赖）
 ├── test/compare.test.js # 方案比选测试：三策略候选、两种目标决胜链、全部排不进不指定最佳、确定性、校验
 ├── test/cost.test.js    # 多纸型成本排产测试：择优规则、同分顺序、库存、终止原因、校验
 ├── test/grain.test.js   # 纹向约束测试：朝向规则、三种模式贯通、受阻诊断、校验
 ├── test/order.test.js   # 订单隔离排产测试：每轮选订单、订单×纸型联合决胜、只扣对应库存、受阻止损、汇总、校验
 ├── test/kit.test.js     # 成套生产测试：每张仅完整套（无富余半套）、套数最大、扣减守恒、no-progress 不扣库存、成本决胜、校验
-├── test/stack.test.js   # 叠纸裁切排程测试：合批条件、父刀先后、叠纸上限、可合并张数/总切线长/纸张序号/原刀序决胜、未排原因、校验
+├── test/stack.test.js   # 叠纸裁切排程测试：合批条件、父刀先后与批次 dependsOn、叠纸上限、可合并张数/总切线长/纸张序号/原刀序决胜、未排原因、校验
+├── test/workorder.test.js # 执行工单测试：班次拆分守恒、稳定拓扑、跨班次依赖、未分配刀、环依赖/容量校验、CSV 与 HTTP 接口
 ├── Dockerfile
 └── docker-compose.yml
 ```
@@ -584,9 +680,20 @@ npm test
 
 叠纸裁切排程另覆盖：仅当区域宽高 / 刀向 / 刀位 / 刀缝全部一致时才合批（任一差异均不合并）、
 每批不超过叠纸上限且每张纸每批至多一刀、超出上限的同刀纸张进入后续批次（`stack-limit`）、
-任何子刀所在批次不早于其父刀批次、每轮按可合并张数 → 总切线长度 → 纸张序号 → 原刀序决胜、
+任何子刀所在批次不早于其父刀批次、批次附带父刀派生依赖 `dependsOn`（升序去重、均早于本批）、
+每轮按可合并张数 → 总切线长度 → 纸张序号 → 原刀序决胜、
 全部刀恰好排入一次（刀数与批次纸张数守恒）、上限为 1 时全部为单张独刀批、
 自动识别批量 / 成本两种结果形态并透传轮次 / 纸型 / 订单号、
 零刀纸张给出 `no-cuts` 原因、等待父刀与独刀诊断、精简输入与完整输入一致、
 同输入两次运行结果完全一致（确定性），以及叠纸上限（1～500 整数）、
 空 `sheets` 与切割记录非法时的参数校验。
+
+执行工单另覆盖：所有批次恰好分配一次且每班不超过每班最多刀次、
+无追加依赖时拓扑序即批次号升序并连续切段、批次内纸张顺序与排程结果完全一致、
+父刀派生依赖全部满足（依赖批次不晚于本批班次）、跨班次依赖标注与汇总一致、
+追加依赖改变拓扑顺序但仍确定、无刀纸张与缺失刀分别给出 `no-cuts` / `not-scheduled` 原因、
+完整排程无未分配刀、容量非法（非 1～500 整数）与批次超容报错、
+排程自带或追加的环依赖与自依赖报错、依赖不存在批次 / 非法输入形态报错、
+`schedule` 包装与平铺两种形态等价、同输入两次运行结果一致（确定性）、
+CSV 含 BOM / 表头 / 逐批行 / 未分配刀段与跨班次标注，
+以及 HTTP 层合法请求 200、容量非法与环依赖 400、`?format=csv` 可下载响应。
